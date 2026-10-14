@@ -175,5 +175,58 @@ class AccidentsTest(unittest.TestCase):
         self.assertEqual(self.run_once(), [])
 
 
+class CompareWithActualTest(unittest.TestCase):
+    """Schedule says 2.2 is off 16:00–18:00; the live API decides what really happens."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.sent, self.live = [], []
+        patches = [
+            mock.patch.object(svitlo, "STATE_FILE", Path(tmp.name) / "state.json"),
+            mock.patch.object(svitlo, "fetch_page", load_fixture),
+            mock.patch.object(svitlo, "fetch_accidents", lambda city, street: self.live),
+            mock.patch.object(svitlo, "send_telegram", self.sent.append),
+            mock.patch.object(sys, "argv", ["svitlo.py"]),
+            mock.patch.dict(os.environ, {"SUBQUEUE": "2.2", "CITY_ID": "1", "STREET_ID": "2"}),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        os.environ.pop("BUILDING", None)
+
+    def run_at(self, hh, mm):
+        fake = mock.Mock(wraps=datetime)
+        fake.now.return_value = datetime(2026, 10, 14, hh, mm, tzinfo=svitlo.TZ)
+        with mock.patch.object(svitlo, "datetime", fake):
+            before = len(self.sent)
+            svitlo.main()
+            return self.sent[before:]
+
+    def test_power_on_despite_schedule(self):
+        msgs = self.run_at(15, 40)
+        self.assertTrue(any("За графіком можливе відключення через 20 хв" in m for m in msgs))
+        self.assertEqual(self.run_at(16, 5), [])  # too early to judge
+
+        msgs = self.run_at(16, 10)
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("Світло є", msgs[0])
+        self.assertIn("16:00–18:00", msgs[0])
+
+        self.assertEqual(self.run_at(16, 20), [])
+
+    def test_power_off_as_scheduled(self):
+        self.run_at(15, 40)
+        self.live = [accident(1)]
+        msgs = self.run_at(16, 10)
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("Світло вимкнули", msgs[0])
+
+    def test_no_comparison_without_address(self):
+        del os.environ["CITY_ID"]
+        self.run_at(15, 40)
+        self.assertEqual(self.run_at(16, 10), [])
+
+
 if __name__ == "__main__":
     unittest.main()

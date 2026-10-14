@@ -34,6 +34,8 @@ TZ = ZoneInfo("Europe/Kyiv")
 STATE_FILE = Path(__file__).with_name("state.json")
 SLOTS_PER_DAY = 48  # half-hour slots
 ON_COLORS = {"white", "#ffffff", "#fff", ""}
+# How long into a scheduled outage to wait for it to show up in the live API
+VERIFY_DELAY = timedelta(minutes=10)
 
 
 def fetch_page():
@@ -153,7 +155,7 @@ def send_telegram(text):
 
 
 def load_state():
-    state = {"schedule": {}, "reminded": [], "accidents": {}}
+    state = {"schedule": {}, "reminded": [], "verified": [], "accidents": {}}
     if STATE_FILE.exists():
         state.update(json.loads(STATE_FILE.read_text(encoding="utf-8")))
     return state
@@ -172,7 +174,7 @@ def check_schedule(state, now, messages):
     sub = os.environ.get("SUBQUEUE", "").strip()
     if not sub:
         print("SUBQUEUE не задано — графік не перевіряю", file=sys.stderr)
-        return
+        return None
     remind = timedelta(minutes=int(os.environ.get("REMIND_MINUTES", "30")))
     updated, schedule = parse_schedule(fetch_page())
     if not schedule:
@@ -191,22 +193,28 @@ def check_schedule(state, now, messages):
         messages.append(f"📅 <b>{verb} на {d}</b> (підчерга {sub})\n{body}\n\n<i>Оновлено: {updated}</i>")
         state["schedule"][d] = as_text
 
-    # 2. Reminders before an outage
-    for d, subs in schedule.items():
-        for a, b in to_intervals(d, subs.get(sub, [])):
-            key = a.isoformat()
-            if a - remind <= now < b and key not in state["reminded"]:
-                mins = int((a - now).total_seconds() // 60)
-                when = f"через {mins} хв" if mins > 0 else "вже зараз"
-                messages.append(f"⚠️ <b>Відключення {when}</b>: {fmt_interval(a, b)} (підчерга {sub})")
-                state["reminded"].append(key)
+    # 2. Reminders before an outage. The schedule is only a plan, hence "можливе"
+    intervals = [iv for d, subs in schedule.items() for iv in to_intervals(d, subs.get(sub, []))]
+    for a, b in intervals:
+        key = a.isoformat()
+        if a - remind <= now < b and key not in state["reminded"]:
+            mins = int((a - now).total_seconds() // 60)
+            when = f"через {mins} хв" if mins > 0 else "вже зараз"
+            messages.append(
+                f"⚠️ <b>За графіком можливе відключення {when}</b>: {fmt_interval(a, b)} (підчерга {sub})"
+            )
+            state["reminded"].append(key)
+    return intervals
 
 
 def check_accidents(state, now, messages):
-    """Live outages at the address: notify when power goes off, back on, or ETA changes."""
+    """Live outages at the address: notify when power goes off, back on, or ETA changes.
+
+    Returns the active outages, or None when the address is not configured.
+    """
     city, street = os.environ.get("CITY_ID", "").strip(), os.environ.get("STREET_ID", "").strip()
     if not (city and street):
-        return
+        return None
     building = os.environ.get("BUILDING", "").strip()
 
     active = {}
@@ -235,6 +243,20 @@ def check_accidents(state, now, messages):
         del known[acc_id]
     if ended and not active:
         messages.append("🟢 <b>Відключення завершилось</b> — світло мало з'явитися")
+    return active
+
+
+def compare_with_actual(state, now, messages, intervals, active):
+    """Some time into a scheduled outage, tell whether the power is actually still on."""
+    for a, b in intervals:
+        key = a.isoformat()
+        if a + VERIFY_DELAY <= now < b and key not in state["verified"]:
+            state["verified"].append(key)
+            # If it is off, the 🔴 from check_accidents already said so
+            if not active:
+                messages.append(
+                    f"💡 <b>Світло є</b>, хоча за графіком зараз відключення {fmt_interval(a, b)}"
+                )
 
 
 def main():
@@ -250,19 +272,24 @@ def main():
     state = load_state()
     old_state = json.dumps(state, sort_keys=True)
     now = datetime.now(TZ)
-    messages, failed = [], False
+    messages, failed, results = [], False, {}
 
     # Each source is checked independently so one site being down doesn't block the other
     for check in (check_schedule, check_accidents):
         try:
-            check(state, now, messages)
+            results[check] = check(state, now, messages)
         except Exception as e:
             failed = True
             print(f"Помилка в {check.__name__}: {e!r}", file=sys.stderr)
 
+    intervals, active = results.get(check_schedule), results.get(check_accidents)
+    if intervals is not None and active is not None:
+        compare_with_actual(state, now, messages, intervals, active)
+
     # Drop old entries so state.json does not grow
     cutoff = now - timedelta(days=2)
-    state["reminded"] = [k for k in state["reminded"] if datetime.fromisoformat(k) > cutoff]
+    for key in ("reminded", "verified"):
+        state[key] = [k for k in state[key] if datetime.fromisoformat(k) > cutoff]
     state["schedule"] = {
         d: v for d, v in state["schedule"].items()
         if datetime.strptime(d, "%d.%m.%Y").replace(tzinfo=TZ) > cutoff
