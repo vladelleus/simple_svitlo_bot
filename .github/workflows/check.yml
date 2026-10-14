@@ -2,7 +2,7 @@ name: Перевірка відключень
 
 on:
   schedule:
-    - cron: "*/10 * * * *"  # кожні 10 хв (GitHub може запізнюватись на кілька хвилин)
+    - cron: "*/10 * * * *"  # every 10 min (GitHub may delay scheduled runs by a few minutes)
   workflow_dispatch:
 
 permissions:

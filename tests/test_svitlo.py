@@ -42,7 +42,7 @@ class ParseTest(unittest.TestCase):
 
 
 class NotifyTest(unittest.TestCase):
-    """Кілька запусків поспіль з підставленим часом: без дублів повідомлень."""
+    """Several consecutive runs with a faked clock: no duplicate messages."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

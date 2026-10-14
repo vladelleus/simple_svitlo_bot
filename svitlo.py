@@ -1,15 +1,15 @@
-"""Моніторинг графіка відключень Житомиробленерго з повідомленнями в Telegram.
+"""Monitors the Zhytomyroblenergo power outage schedule and notifies via Telegram.
 
-Змінні середовища:
-  TELEGRAM_BOT_TOKEN  токен бота від @BotFather
-  TELEGRAM_CHAT_ID    id чату, куди слати повідомлення
-  SUBQUEUE            ваша підчерга, напр. "4.2"
-  REMIND_MINUTES      за скільки хвилин попереджати (за замовчуванням 30)
+Environment variables:
+  TELEGRAM_BOT_TOKEN  bot token from @BotFather
+  TELEGRAM_CHAT_ID    chat/channel id to send messages to
+  SUBQUEUE            your subqueue, e.g. "2.2"
+  REMIND_MINUTES      how many minutes before an outage to warn (default 30)
 
-Запуск:
-  python svitlo.py            перевірити і надіслати, якщо є що
-  python svitlo.py --print    лише показати розібраний графік
-  python svitlo.py --test     надіслати тестове повідомлення
+Usage:
+  python svitlo.py            check and send notifications if anything is new
+  python svitlo.py --print    only print the parsed schedule
+  python svitlo.py --test     send a test message
 """
 
 import html
@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 URL = "https://www.ztoe.com.ua/unhooking-search.php"
 TZ = ZoneInfo("Europe/Kyiv")
 STATE_FILE = Path(__file__).with_name("state.json")
-SLOTS_PER_DAY = 48  # півгодинні слоти
+SLOTS_PER_DAY = 48  # half-hour slots
 ON_COLORS = {"white", "#ffffff", "#fff", ""}
 
 
@@ -49,7 +49,7 @@ def cell_text(raw):
 
 
 def parse_schedule(page):
-    """Повертає (час оновлення, {дата: {підчерга: [вимкнено? x48]}})."""
+    """Returns (update time, {date: {subqueue: [is_off] x48}})."""
     m = re.search(r"Дата оновлення інформації\s*-\s*([^<]+)", page)
     updated = m.group(1).strip() if m else ""
 
@@ -69,7 +69,7 @@ def parse_schedule(page):
             slots = []
             for attrs, content in cells:
                 bg = re.search(r"background:\s*([^;\"]+)", attrs)
-                # Слотові клітинки заповнені купою &nbsp; — так їх і відрізняємо від підписів
+                # Slot cells are padded with lots of &nbsp; — that is how we tell them from labels
                 if bg and content.count("&nbsp;") > 3:
                     slots.append(bg.group(1).strip().lower() not in ON_COLORS)
             for i, d in enumerate(dates):
@@ -80,7 +80,7 @@ def parse_schedule(page):
 
 
 def to_intervals(date_str, slots):
-    """[вимкнено?] x48 -> [(початок, кінець)] у вигляді datetime."""
+    """[is_off] x48 -> [(start, end)] as datetimes."""
     day = datetime.strptime(date_str, "%d.%m.%Y").replace(tzinfo=TZ)
     intervals, start = [], None
     for i, off in enumerate(slots + [False]):
@@ -144,7 +144,7 @@ def main():
     now = datetime.now(TZ)
     messages = []
 
-    # 1. Новий або змінений графік на якусь дату
+    # 1. New or changed schedule for some date
     for d, subs in schedule.items():
         if sub not in subs:
             continue
@@ -157,7 +157,7 @@ def main():
         messages.append(f"📅 <b>{verb} на {d}</b> (підчерга {sub})\n{body}\n\n<i>Оновлено: {updated}</i>")
         state["schedule"][d] = as_text
 
-    # 2. Нагадування перед відключенням
+    # 2. Reminders before an outage
     for d, subs in schedule.items():
         for a, b in to_intervals(d, subs.get(sub, [])):
             key = a.isoformat()
@@ -167,7 +167,7 @@ def main():
                 messages.append(f"⚠️ <b>Відключення {when}</b>: {fmt_interval(a, b)} (підчерга {sub})")
                 state["reminded"].append(key)
 
-    # Прибираємо старе, щоб state.json не ріс
+    # Drop old entries so state.json does not grow
     cutoff = now - timedelta(days=2)
     state["reminded"] = [k for k in state["reminded"] if datetime.fromisoformat(k) > cutoff]
     state["schedule"] = {
