@@ -1,0 +1,45 @@
+name: Перевірка відключень
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"  # кожні 10 хв (GitHub може запізнюватись на кілька хвилин)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: svitlo
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Перевірити графік
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUBQUEUE: ${{ vars.SUBQUEUE || '2.2' }}
+          REMIND_MINUTES: ${{ vars.REMIND_MINUTES || '30' }}
+        run: python svitlo.py
+
+      - name: Зберегти стан
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "Оновити стан"
+            git pull --rebase
+            git push
+          fi

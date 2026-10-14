@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: [state.json]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Синтаксис
+        run: python -m py_compile svitlo.py
+
+      - name: Тести
+        run: python -m unittest discover -s tests -v
+
+      - name: Сайт доступний і розмітка розбирається
+        run: python svitlo.py --print
