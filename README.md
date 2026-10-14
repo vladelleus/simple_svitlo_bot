@@ -1,5 +1,7 @@
 # svitlo_e
 
+[![Перевірка відключень](https://github.com/vladelleus/simple_svitlo_bot/actions/workflows/check.yml/badge.svg?event=schedule)](https://github.com/vladelleus/simple_svitlo_bot/actions/workflows/check.yml)
+
 Стежить за [графіком відключень Житомиробленерго](https://www.ztoe.com.ua/unhooking-search.php) і пише в Telegram:
 
 - 📅 коли з'являється або змінюється графік для вашої підчерги;
