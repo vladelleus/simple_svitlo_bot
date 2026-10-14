@@ -2,7 +2,7 @@ name: Перевірка відключень
 
 on:
   schedule:
-    - cron: "*/10 * * * *"  # every 10 min (GitHub may delay scheduled runs by a few minutes)
+    - cron: "*/5 * * * *"  # GitHub's minimum; scheduled runs may still be delayed by a few minutes
   workflow_dispatch:
 
 permissions:
@@ -25,15 +25,20 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Перевірити графік
+      - name: Перевірити графік і відключення
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SUBQUEUE: ${{ vars.SUBQUEUE || '2.2' }}
           REMIND_MINUTES: ${{ vars.REMIND_MINUTES || '30' }}
+          # Kept in repo variables, not here: the repo is public
+          CITY_ID: ${{ vars.CITY_ID }}
+          STREET_ID: ${{ vars.STREET_ID }}
+          BUILDING: ${{ vars.BUILDING }}
         run: python svitlo.py
 
       - name: Зберегти стан
+        if: always()
         run: |
           if [ -n "$(git status --porcelain state.json)" ]; then
             git config user.name "github-actions[bot]"

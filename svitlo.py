@@ -5,6 +5,10 @@ Environment variables:
   TELEGRAM_CHAT_ID    chat/channel id to send messages to
   SUBQUEUE            your subqueue, e.g. "2.2"
   REMIND_MINUTES      how many minutes before an outage to warn (default 30)
+  CITY_ID, STREET_ID  address ids on ztoe-poweron.inneti.net for live outage checks
+                      (see the request URL in browser dev tools); check skipped if unset
+  BUILDING            optional house number, e.g. "17а"; without it any outage
+                      on the street counts
 
 Usage:
   python svitlo.py            check and send notifications if anything is new
@@ -25,6 +29,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 URL = "https://www.ztoe.com.ua/unhooking-search.php"
+API_BASE = "https://api-ztoe-poweron.inneti.net"
 TZ = ZoneInfo("Europe/Kyiv")
 STATE_FILE = Path(__file__).with_name("state.json")
 SLOTS_PER_DAY = 48  # half-hour slots
@@ -42,6 +47,45 @@ def fetch_page():
                 raise
             print(f"Помилка завантаження ({e}), повтор...", file=sys.stderr)
             time.sleep(10)
+
+
+def fetch_accidents(city_id, street_id):
+    """All currently active outages for the street (follows hydra pagination)."""
+    query = urllib.parse.urlencode({"city.id": city_id, "street.id": street_id})
+    path, members = f"/api/pw_accidents?{query}", []
+    for _ in range(20):
+        req = urllib.request.Request(
+            API_BASE + path,
+            headers={"Accept": "application/ld+json", "User-Agent": "Mozilla/5.0 (svitlo-bot)"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        members += data.get("hydra:member", [])
+        path = data.get("hydra:view", {}).get("hydra:next")
+        if not path:
+            break
+    return members
+
+
+def parse_api_time(value):
+    # The API labels Kyiv local time as "+00:00" (the site renders it with timeZone: "UTC")
+    return datetime.fromisoformat(value[:19]).replace(tzinfo=TZ) if value else None
+
+
+def accident_kind(acc):
+    """Same labels the ztoe-poweron site shows."""
+    by_reason = {1: "Графік аварійних відключень", 2: "Графік погодинних відключень",
+                 3: "Спеціальний графік аварійних відключень"}
+    by_type = {0: "Планове відключення", 1: "Аварійне відключення", 2: "Оперативні перемикання"}
+    reason = acc.get("switchSubReason") or 0
+    return by_reason.get(reason) if reason > 0 else by_type.get(acc.get("typeOff"), "Відключення")
+
+
+def affects_building(acc, building):
+    if not building:
+        return True
+    houses = {h.strip().lower() for h in (acc.get("buildingNames") or "").split(",")}
+    return building.strip().lower() in houses
 
 
 def cell_text(raw):
@@ -109,40 +153,30 @@ def send_telegram(text):
 
 
 def load_state():
+    state = {"schedule": {}, "reminded": [], "accidents": {}}
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"schedule": {}, "reminded": []}
+        state.update(json.loads(STATE_FILE.read_text(encoding="utf-8")))
+    return state
 
 
-def main():
-    args = set(sys.argv[1:])
-    if "--test" in args:
-        send_telegram("✅ Тест: бот моніторингу світла працює")
-        print("Тестове повідомлення надіслано")
-        return
+def print_schedule(updated, schedule):
+    print(f"Оновлено: {updated}")
+    for d, subs in schedule.items():
+        print(f"\n{d}")
+        for s, slots in subs.items():
+            ivs = ", ".join(fmt_interval(a, b) for a, b in to_intervals(d, slots)) or "без відключень"
+            print(f"  {s:>5}: {ivs}")
 
+
+def check_schedule(state, now, messages):
     sub = os.environ.get("SUBQUEUE", "").strip()
+    if not sub:
+        print("SUBQUEUE не задано — графік не перевіряю", file=sys.stderr)
+        return
     remind = timedelta(minutes=int(os.environ.get("REMIND_MINUTES", "30")))
     updated, schedule = parse_schedule(fetch_page())
     if not schedule:
-        sys.exit("Не вдалося знайти таблицю графіка на сторінці — можливо, змінилась розмітка сайту")
-
-    if "--print" in args:
-        print(f"Оновлено: {updated}")
-        for d, subs in schedule.items():
-            print(f"\n{d}")
-            for s, slots in subs.items():
-                ivs = ", ".join(fmt_interval(a, b) for a, b in to_intervals(d, slots)) or "без відключень"
-                print(f"  {s:>5}: {ivs}")
-        return
-
-    if not sub:
-        sys.exit("Вкажіть SUBQUEUE, напр. 4.2 (дивіться python svitlo.py --print)")
-
-    state = load_state()
-    old_state = json.dumps(state, sort_keys=True)
-    now = datetime.now(TZ)
-    messages = []
+        raise RuntimeError("Не вдалося знайти таблицю графіка на сторінці — можливо, змінилась розмітка сайту")
 
     # 1. New or changed schedule for some date
     for d, subs in schedule.items():
@@ -167,6 +201,65 @@ def main():
                 messages.append(f"⚠️ <b>Відключення {when}</b>: {fmt_interval(a, b)} (підчерга {sub})")
                 state["reminded"].append(key)
 
+
+def check_accidents(state, now, messages):
+    """Live outages at the address: notify when power goes off, back on, or ETA changes."""
+    city, street = os.environ.get("CITY_ID", "").strip(), os.environ.get("STREET_ID", "").strip()
+    if not (city and street):
+        return
+    building = os.environ.get("BUILDING", "").strip()
+
+    active = {}
+    for acc in fetch_accidents(city, street):
+        if affects_building(acc, building):
+            active[str(acc["id"])] = acc
+
+    # Only ids and times go to state.json: the repo is public, the address must not leak
+    known = state["accidents"]
+    for acc_id, acc in active.items():
+        start, eta = parse_api_time(acc.get("dateEvent")), parse_api_time(acc.get("datePlanIn"))
+        eta_text = eta.strftime("%H:%M %d.%m") if eta else "невідомо"
+        note = f"\n<i>{html.escape(acc['koment'])}</i>" if acc.get("koment") else ""
+        if acc_id not in known:
+            since = start.strftime("%H:%M %d.%m") if start else "невідомо"
+            messages.append(
+                f"🔴 <b>Світло вимкнули</b> — {accident_kind(acc)}\n"
+                f"З {since}, орієнтовно до {eta_text}{note}"
+            )
+        elif known[acc_id].get("eta") != acc.get("datePlanIn"):
+            messages.append(f"⏱ <b>Змінився час увімкнення</b>: орієнтовно до {eta_text}{note}")
+        known[acc_id] = {"eta": acc.get("datePlanIn")}
+
+    ended = [acc_id for acc_id in known if acc_id not in active]
+    for acc_id in ended:
+        del known[acc_id]
+    if ended and not active:
+        messages.append("🟢 <b>Відключення завершилось</b> — світло мало з'явитися")
+
+
+def main():
+    args = set(sys.argv[1:])
+    if "--test" in args:
+        send_telegram("✅ Тест: бот моніторингу світла працює")
+        print("Тестове повідомлення надіслано")
+        return
+    if "--print" in args:
+        print_schedule(*parse_schedule(fetch_page()))
+        return
+
+    state = load_state()
+    old_state = json.dumps(state, sort_keys=True)
+    now = datetime.now(TZ)
+    messages, failed = [], False
+
+    # Each source is checked independently so one site being down doesn't block the other
+    for check in (check_schedule, check_accidents):
+        try:
+            check(state, now, messages)
+        except Exception as e:
+            failed = True
+            print(f"Помилка в {check.__name__}: {e!r}", file=sys.stderr)
+
     # Drop old entries so state.json does not grow
     cutoff = now - timedelta(days=2)
     state["reminded"] = [k for k in state["reminded"] if datetime.fromisoformat(k) > cutoff]
@@ -182,6 +275,8 @@ def main():
         STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     if not messages:
         print("Нічого нового")
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,10 @@
 Стежить за [графіком відключень Житомиробленерго](https://www.ztoe.com.ua/unhooking-search.php) і пише в Telegram:
 
 - 📅 коли з'являється або змінюється графік для вашої підчерги;
-- ⚠️ за `REMIND_MINUTES` хвилин (типово 30) до кожного відключення.
+- ⚠️ за `REMIND_MINUTES` хвилин (типово 30) до кожного відключення;
+- 🔴 коли світло за вашою адресою фактично вимкнули (будь-яке діюче відключення з
+  [ztoe-poweron.inneti.net](https://ztoe-poweron.inneti.net/): графік, аварійне, планове),
+  ⏱ коли змінився орієнтовний час увімкнення і 🟢 коли відключення завершилось.
 
 ## Налаштування
 
@@ -14,16 +17,21 @@
    `https://api.telegram.org/bot<ТОКЕН>/getUpdates` і знайдіть `"chat":{"id":...}`.
 3. **Підчерга.** Знайдіть свою адресу на сайті або подивіться всі підчерги:
    `python svitlo.py --print`.
+4. **Адреса для діючих відключень.** На [ztoe-poweron.inneti.net](https://ztoe-poweron.inneti.net/)
+   оберіть місто й вулицю, у DevTools → Network знайдіть запит `pw_accidents?...&city.id=…&street.id=…`
+   — це `CITY_ID` і `STREET_ID`. `BUILDING` — номер будинку (необов'язково; без нього
+   спрацює будь-яке відключення на вулиці).
 
 ## Запуск у GitHub Actions (рекомендовано)
 
-Працює в хмарі кожні 10 хв, навіть коли ваш комп'ютер вимкнений.
+Працює в хмарі кожні 5 хв (GitHub може запізнюватись на кілька хвилин), навіть коли ваш комп'ютер вимкнений.
 
 1. Запуште репозиторій на GitHub (публічний репозиторій — Actions безлімітні; у приватному
    цей розклад з'їсть більше безкоштовних 2000 хв/міс).
 2. *Settings → Secrets and variables → Actions*:
    - **Secrets:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
-   - **Variables:** `SUBQUEUE` (типово `2.2`), за бажання `REMIND_MINUTES`
+   - **Variables:** `SUBQUEUE` (типово `2.2`), `CITY_ID`, `STREET_ID`, за бажання `BUILDING`
+     і `REMIND_MINUTES`. Адресу тримайте саме у Variables, а не в коді — репозиторій публічний.
 3. *Actions → Перевірка відключень → Run workflow* — перший запуск надішле поточний графік.
 
 ## Локальний запуск
@@ -31,11 +39,12 @@
 ```powershell
 pip install -r requirements.txt
 $env:TELEGRAM_BOT_TOKEN = "..."; $env:TELEGRAM_CHAT_ID = "..."; $env:SUBQUEUE = "2.2"
+$env:CITY_ID = "..."; $env:STREET_ID = "..."; $env:BUILDING = "..."
 python svitlo.py --test   # тестове повідомлення
 python svitlo.py          # одна перевірка
 ```
 
-Для регулярних перевірок додайте завдання в Планувальник завдань Windows кожні 10 хв.
+Для регулярних перевірок додайте завдання в Планувальник завдань Windows кожні 5 хв.
 
 ## Тести
 

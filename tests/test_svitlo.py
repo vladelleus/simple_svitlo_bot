@@ -95,5 +95,85 @@ class NotifyTest(unittest.TestCase):
         self.assertIn("Змінився графік", msgs[0])
 
 
+def accident(acc_id, plan_in="2026-10-14T18:00:00+00:00", buildings="1, 2, 17а"):
+    # Trimmed real record from api-ztoe-poweron.inneti.net/api/pw_accidents
+    return {
+        "id": acc_id,
+        "dateEvent": "2026-10-14T16:00:00+00:00",
+        "datePlanIn": plan_in,
+        "koment": "ГПВ-2.2 зима",
+        "switchSubReason": 2,
+        "typeOff": 1,
+        "buildingNames": buildings,
+    }
+
+
+class AccidentsTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.sent, self.live = [], []
+        patches = [
+            mock.patch.object(svitlo, "STATE_FILE", Path(tmp.name) / "state.json"),
+            mock.patch.object(svitlo, "check_schedule", lambda *a: None),
+            mock.patch.object(svitlo, "fetch_accidents", lambda city, street: self.live),
+            mock.patch.object(svitlo, "send_telegram", self.sent.append),
+            mock.patch.object(sys, "argv", ["svitlo.py"]),
+            mock.patch.dict(os.environ, {"CITY_ID": "1", "STREET_ID": "2", "BUILDING": "17А"}),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def run_once(self):
+        before = len(self.sent)
+        svitlo.main()
+        return self.sent[before:]
+
+    def test_off_eta_change_on(self):
+        self.assertEqual(self.run_once(), [])
+
+        self.live = [accident(1)]
+        msgs = self.run_once()
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("Світло вимкнули", msgs[0])
+        self.assertIn("Графік погодинних відключень", msgs[0])
+        # API time is Kyiv local time despite the "+00:00" suffix
+        self.assertIn("З 16:00 14.10, орієнтовно до 18:00 14.10", msgs[0])
+
+        self.assertEqual(self.run_once(), [])
+
+        self.live = [accident(1, plan_in="2026-10-14T19:30:00+00:00")]
+        msgs = self.run_once()
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("до 19:30", msgs[0])
+
+        self.live = []
+        msgs = self.run_once()
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("Відключення завершилось", msgs[0])
+
+    def test_other_buildings_ignored(self):
+        self.live = [accident(1, buildings="3, 5, 7")]
+        self.assertEqual(self.run_once(), [])
+
+    def test_on_only_when_all_outages_end(self):
+        self.live = [accident(1), accident(2)]
+        self.assertEqual(len(self.run_once()), 2)
+        self.live = [accident(2)]
+        self.assertEqual(self.run_once(), [])
+        self.live = []
+        self.assertIn("Відключення завершилось", self.run_once()[0])
+
+    def test_api_failure_keeps_state(self):
+        self.live = [accident(1)]
+        self.run_once()
+        with mock.patch.object(svitlo, "fetch_accidents", side_effect=OSError("down")):
+            with self.assertRaises(SystemExit):
+                svitlo.main()
+        # No false "power is back" after the API recovers
+        self.assertEqual(self.run_once(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
