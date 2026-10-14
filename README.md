@@ -1,6 +1,6 @@
 # svitlo_e
 
-[![Перевірка відключень](https://github.com/vladelleus/simple_svitlo_bot/actions/workflows/check.yml/badge.svg?event=schedule)](https://github.com/vladelleus/simple_svitlo_bot/actions/workflows/check.yml)
+[![Перевірка відключень](https://github.com/vladelleus/simple_svitlo_bot/actions/workflows/check.yml/badge.svg?event=workflow_dispatch)](https://github.com/vladelleus/simple_svitlo_bot/actions/workflows/check.yml)
 
 Стежить за [графіком відключень Житомиробленерго](https://www.ztoe.com.ua/unhooking-search.php) і пише в Telegram:
 
@@ -26,7 +26,9 @@
 
 ## Запуск у GitHub Actions (рекомендовано)
 
-Працює в хмарі кожні 5 хв (GitHub може запізнюватись на кілька хвилин), навіть коли ваш комп'ютер вимкнений.
+Працює в хмарі кожні 5 хв, навіть коли ваш комп'ютер вимкнений. Запускає його
+[cron-job.org](https://cron-job.org): вбудований розклад GitHub (`schedule`) часто запізнюється
+або пропускає запуски, тому його прибрано.
 
 1. Запуште репозиторій на GitHub (публічний репозиторій — Actions безлімітні; у приватному
    цей розклад з'їсть більше безкоштовних 2000 хв/міс).
@@ -35,6 +37,15 @@
    - **Variables:** `SUBQUEUE` (типово `2.2`), `CITY_ID`, `STREET_ID`, за бажання `BUILDING`
      і `REMIND_MINUTES`. Адресу тримайте саме у Variables, а не в коді — репозиторій публічний.
 3. *Actions → Перевірка відключень → Run workflow* — перший запуск надішле поточний графік.
+4. **Запуск кожні 5 хв.** Створіть [fine-grained токен](https://github.com/settings/personal-access-tokens/new)
+   лише для цього репозиторію з правом *Actions: Read and write*. На cron-job.org створіть задачу
+   «Every 5 minutes»:
+   - `POST https://api.github.com/repos/vladelleus/simple_svitlo_bot/actions/workflows/check.yml/dispatches`
+   - заголовки `Authorization: Bearer <токен>`, `Accept: application/vnd.github+json`
+   - тіло `{"ref":"main"}`
+
+   Відповідь має бути 2xx. Коли токен спливе, запуски зупиняться — увімкніть сповіщення про
+   помилки в cron-job.org.
 
 ## Локальний запуск
 

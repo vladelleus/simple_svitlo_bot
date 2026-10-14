@@ -1,8 +1,8 @@
 name: Перевірка відключень
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"  # GitHub's minimum; scheduled runs may still be delayed by a few minutes
+  # Triggered every 5 min by cron-job.org via the workflow_dispatch API:
+  # GitHub's own schedule trigger was delayed or skipped too often
   workflow_dispatch:
 
 permissions:
