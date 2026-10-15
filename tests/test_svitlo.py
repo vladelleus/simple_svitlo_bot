@@ -95,11 +95,12 @@ class NotifyTest(unittest.TestCase):
         self.assertIn("Змінився графік", msgs[0])
 
 
-def accident(acc_id, plan_in="2026-10-14T18:00:00+00:00", buildings="1, 2, 17а"):
+def accident(acc_id, plan_in="2026-10-14T18:00:00+00:00", buildings="1, 2, 17а",
+             start="2026-10-14T16:00:00+00:00"):
     # Trimmed real record from api-ztoe-poweron.inneti.net/api/pw_accidents
     return {
         "id": acc_id,
-        "dateEvent": "2026-10-14T16:00:00+00:00",
+        "dateEvent": start,
         "datePlanIn": plan_in,
         "koment": "ГПВ-2.2 зима",
         "switchSubReason": 2,
@@ -149,20 +150,47 @@ class AccidentsTest(unittest.TestCase):
         self.assertIn("до 19:30", msgs[0])
 
         self.live = []
+        self.assertEqual(self.run_once(), [])  # one empty answer is not enough
         msgs = self.run_once()
         self.assertEqual(len(msgs), 1)
         self.assertIn("Відключення завершилось", msgs[0])
+
+    def test_new_record_id_for_same_outage(self):
+        # Real case: the API re-imported the 08:00 outage with a new id every few minutes
+        self.live = [accident(301699962)]
+        self.assertEqual(len(self.run_once()), 1)
+        self.live = [accident(301705218)]
+        self.assertEqual(self.run_once(), [])
+
+    def test_brief_empty_answer_is_ignored(self):
+        self.live = [accident(1)]
+        self.run_once()
+        self.live = []
+        self.assertEqual(self.run_once(), [])
+        self.live = [accident(2)]
+        self.assertEqual(self.run_once(), [])
+
+    def test_legacy_id_keyed_state(self):
+        svitlo.STATE_FILE.write_text(
+            json.dumps({"accidents": {"301699962": {"eta": "2026-10-14T18:00:00+00:00"}}}),
+            encoding="utf-8",
+        )
+        self.live = [accident(301705218)]
+        self.assertEqual(self.run_once(), [])
 
     def test_other_buildings_ignored(self):
         self.live = [accident(1, buildings="3, 5, 7")]
         self.assertEqual(self.run_once(), [])
 
     def test_on_only_when_all_outages_end(self):
-        self.live = [accident(1), accident(2)]
+        later = "2026-10-14T16:30:00+00:00"
+        self.live = [accident(1), accident(2, start=later)]
         self.assertEqual(len(self.run_once()), 2)
-        self.live = [accident(2)]
+        self.live = [accident(2, start=later)]
+        self.assertEqual(self.run_once(), [])
         self.assertEqual(self.run_once(), [])
         self.live = []
+        self.assertEqual(self.run_once(), [])
         self.assertIn("Відключення завершилось", self.run_once()[0])
 
     def test_api_failure_keeps_state(self):

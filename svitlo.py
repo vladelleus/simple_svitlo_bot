@@ -36,6 +36,8 @@ SLOTS_PER_DAY = 48  # half-hour slots
 ON_COLORS = {"white", "#ffffff", "#fff", ""}
 # How long into a scheduled outage to wait for it to show up in the live API
 VERIFY_DELAY = timedelta(minutes=10)
+# Consecutive checks an outage must be absent from the live API before it counts as over
+ENDED_AFTER_MISSES = 2
 
 
 def fetch_page():
@@ -211,7 +213,8 @@ def check_schedule(state, now, messages):
 def check_accidents(state, now, messages):
     """Live outages at the address: notify when power goes off, back on, or ETA changes.
 
-    Returns the active outages, or None when the address is not configured.
+    Returns the outages still considered active (including ones briefly missing from
+    the API), or None when the address is not configured.
     """
     city, street = os.environ.get("CITY_ID", "").strip(), os.environ.get("STREET_ID", "").strip()
     if not (city and street):
@@ -219,33 +222,49 @@ def check_accidents(state, now, messages):
         return None
     building = os.environ.get("BUILDING", "").strip()
 
+    # The API re-imports records and assigns new ids to the same outage, so identify an
+    # outage by its start time and kind instead. Several records (e.g. per building group)
+    # of one outage collapse into one key
     active = {}
     for acc in fetch_accidents(city, street):
         if affects_building(acc, building):
-            active[str(acc["id"])] = acc
+            key = f"{acc.get('dateEvent')}|{acc.get('typeOff')}|{acc.get('switchSubReason')}"
+            active.setdefault(key, acc)
 
-    # Only ids and times go to state.json: the repo is public, the address must not leak
+    # Only keys and times go to state.json: the repo is public, the address must not leak
     known = state["accidents"]
-    for acc_id, acc in active.items():
+    legacy = [k for k in known if k.isdigit()]  # keyed by record id before the fix above
+    if legacy and active:
+        for k in legacy:
+            del known[k]
+        for key, acc in active.items():
+            known[key] = {"eta": acc.get("datePlanIn"), "missing": 0}
+
+    for key, acc in active.items():
         start, eta = parse_api_time(acc.get("dateEvent")), parse_api_time(acc.get("datePlanIn"))
         eta_text = eta.strftime("%H:%M %d.%m") if eta else "невідомо"
         note = f"\n<i>{html.escape(acc['koment'])}</i>" if acc.get("koment") else ""
-        if acc_id not in known:
+        if key not in known:
             since = start.strftime("%H:%M %d.%m") if start else "невідомо"
             messages.append(
                 f"🔴 <b>Світло вимкнули</b> — {accident_kind(acc)}\n"
                 f"З {since}, орієнтовно до {eta_text}{note}"
             )
-        elif known[acc_id].get("eta") != acc.get("datePlanIn"):
+        elif known[key].get("eta") != acc.get("datePlanIn"):
             messages.append(f"⏱ <b>Змінився час увімкнення</b>: орієнтовно до {eta_text}{note}")
-        known[acc_id] = {"eta": acc.get("datePlanIn")}
+        known[key] = {"eta": acc.get("datePlanIn"), "missing": 0}
 
-    ended = [acc_id for acc_id in known if acc_id not in active]
-    for acc_id in ended:
-        del known[acc_id]
-    if ended and not active:
+    # An outage counts as over only after it is missing twice in a row: during a re-import
+    # the API may briefly return nothing, which must not cause a false 🟢 and a repeated 🔴
+    ended = []
+    for key in [k for k in known if k not in active]:
+        known[key]["missing"] = known[key].get("missing", 0) + 1
+        if known[key]["missing"] >= ENDED_AFTER_MISSES:
+            del known[key]
+            ended.append(key)
+    if ended and not known:
         messages.append("🟢 <b>Відключення завершилось</b> — світло мало з'явитися")
-    return active
+    return known
 
 
 def compare_with_actual(state, now, messages, intervals, active):
