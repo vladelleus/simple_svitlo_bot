@@ -31,10 +31,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SUBQUEUE: ${{ vars.SUBQUEUE || '2.2' }}
           REMIND_MINUTES: ${{ vars.REMIND_MINUTES || '30' }}
-          # Kept in repo variables, not here: the repo is public
-          CITY_ID: ${{ vars.CITY_ID }}
-          STREET_ID: ${{ vars.STREET_ID }}
-          BUILDING: ${{ vars.BUILDING }}
+          # Kept in repo secrets (or variables), not here: the repo is public
+          CITY_ID: ${{ secrets.CITY_ID || vars.CITY_ID }}
+          STREET_ID: ${{ secrets.STREET_ID || vars.STREET_ID }}
+          BUILDING: ${{ secrets.BUILDING || vars.BUILDING }}
         run: python svitlo.py
 
       - name: Зберегти стан

@@ -34,7 +34,8 @@
    цей розклад з'їсть більше безкоштовних 2000 хв/міс).
 2. *Settings → Secrets and variables → Actions*:
    - **Secrets:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
-   - **Variables:** `SUBQUEUE` (типово `2.2`), `CITY_ID`, `STREET_ID`, за бажання `BUILDING`
+   - **Variables:** `SUBQUEUE` (типово `2.2`), `CITY_ID`, `STREET_ID`, за бажання `BUILDING` (ці три можна
+     тримати і в Secrets — workflow бере звідти в першу чергу)
      і `REMIND_MINUTES`. Адресу тримайте саме у Variables, а не в коді — репозиторій публічний.
 3. *Actions → Перевірка відключень → Run workflow* — перший запуск надішле поточний графік.
 4. **Запуск кожні 5 хв.** Створіть [fine-grained токен](https://github.com/settings/personal-access-tokens/new)

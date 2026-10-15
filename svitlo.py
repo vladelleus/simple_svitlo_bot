@@ -173,7 +173,8 @@ def print_schedule(updated, schedule):
 def check_schedule(state, now, messages):
     sub = os.environ.get("SUBQUEUE", "").strip()
     if not sub:
-        print("SUBQUEUE не задано — графік не перевіряю", file=sys.stderr)
+        # "::warning::" shows up as a yellow annotation on the GitHub Actions run page
+        print("::warning::SUBQUEUE не задано — графік не перевіряю")
         return None
     remind = timedelta(minutes=int(os.environ.get("REMIND_MINUTES", "30")))
     updated, schedule = parse_schedule(fetch_page())
@@ -214,6 +215,7 @@ def check_accidents(state, now, messages):
     """
     city, street = os.environ.get("CITY_ID", "").strip(), os.environ.get("STREET_ID", "").strip()
     if not (city and street):
+        print("::warning::CITY_ID/STREET_ID не задано — фактичний стан світла не перевіряю")
         return None
     building = os.environ.get("BUILDING", "").strip()
 
